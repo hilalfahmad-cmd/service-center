@@ -5,7 +5,11 @@ user**, lalu memantau dan mengontrolnya dari satu tempat.
 
 ## Fitur
 
-- Daftar layanan yang sudah terdaftar, lengkap dengan status berjalan/gagal/berhenti.
+- Daftar terpisah untuk layanan yang didaftarkan manual dan unit layanan yang
+  ditemukan dari `systemd --user`, lengkap dengan status.
+- Kontrol start/stop/restart dan log untuk layanan manual maupun unit lain yang
+  dimuat systemd. Unit yang ditemukan otomatis tidak diedit, di-enable/disable,
+  atau dihapus oleh aplikasi.
 - Pemilih file dengan deteksi perintah otomatis:
   - `.py`: memakai `venv/.venv` di sekitarnya bila ada, jika tidak `python3`.
   - `.js/.mjs/.cjs`: dijalankan dengan `node`.
@@ -88,9 +92,12 @@ cloudflared tunnel route dns <tunnel> app.example.com
 Ingress di `config.yaml` hanya mengatur routing; tanpa DNS record, hostname
 tidak akan resolve.
 
-Layanan yang sudah didaftarkan dapat dipilih dari sidebar lalu diedit lewat
-tombol **Edit**. Perubahan command dan pengaturan layanan ditulis ke unit
-systemd milik Service Center; aplikasi tidak mengedit unit systemd lain.
+Layanan yang sudah didaftarkan manual dapat dipilih dari bagian **Didaftarkan
+manual** di sidebar lalu diedit lewat tombol **Edit**. Bagian **Layanan systemd
+pengguna** menampilkan unit yang dimuat oleh `systemd --user`; aplikasi dapat
+mengontrol status aktifnya dan membaca log, tetapi tidak mengubah konfigurasi,
+autostart, atau file unitnya. Service Center hanya menemukan unit dalam user
+manager, bukan unit system-wide yang dikelola root.
 
 ## Restore database
 

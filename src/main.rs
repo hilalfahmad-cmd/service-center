@@ -2,13 +2,13 @@ mod backend;
 mod cloudflare;
 mod db_restore;
 
+use adw::gio;
 use backend::{Manager, ServiceState};
 use gtk4::prelude::*;
 use gtk4::{
-    Align, Box as GtkBox, Button, Label, ListBox, ListBoxRow, Orientation,
-    ScrolledWindow, SearchEntry, Stack, TextView,
+    Align, Box as GtkBox, Button, Label, ListBox, ListBoxRow, Orientation, ScrolledWindow,
+    SearchEntry, Stack, TextView,
 };
-use adw::gio;
 use libadwaita as adw;
 use libadwaita::prelude::*;
 use std::cell::RefCell;
@@ -17,6 +17,7 @@ use std::rc::Rc;
 
 struct RowWidgets {
     row: ListBoxRow,
+    search_text: String,
     dot: Label,
     subtitle: Label,
 }
@@ -30,12 +31,20 @@ struct DetailWidgets {
     restart_btn: Button,
     autostart_row: adw::SwitchRow,
     status_banner: adw::Banner,
+    source_row: adw::ActionRow,
+    edit_row: adw::ActionRow,
     file_row: adw::ActionRow,
     command_row: adw::ActionRow,
     workdir_row: adw::ActionRow,
     unit_row: adw::ActionRow,
+    database_group: adw::PreferencesGroup,
+    danger_group: adw::PreferencesGroup,
     logs_view: TextView,
     logs_expander: adw::ExpanderRow,
+}
+
+fn selection_parts(selection: &str) -> Option<(&str, &str)> {
+    selection.split_once(':')
 }
 
 fn main() {
@@ -150,9 +159,12 @@ fn build_ui(app: &adw::Application) {
     }
 
     let mgr = Rc::new(RefCell::new(Manager::new()));
+    let system_services: Rc<RefCell<Vec<backend::SystemService>>> =
+        Rc::new(RefCell::new(Vec::new()));
     let states: Rc<RefCell<HashMap<String, ServiceState>>> = Rc::new(RefCell::new(HashMap::new()));
     let current_id: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
     let rows: Rc<RefCell<HashMap<String, RowWidgets>>> = Rc::new(RefCell::new(HashMap::new()));
+    let group_rows: Rc<RefCell<Vec<ListBoxRow>>> = Rc::new(RefCell::new(Vec::new()));
 
     let window = adw::ApplicationWindow::builder()
         .application(app)
@@ -175,7 +187,10 @@ fn build_ui(app: &adw::Application) {
     // ---------------- Sidebar ----------------
     let sidebar = GtkBox::new(Orientation::Vertical, 0);
     let header = adw::HeaderBar::new();
-    header.set_title_widget(Some(&adw::WindowTitle::new("Service Center", "Pengelola layanan systemd")));
+    header.set_title_widget(Some(&adw::WindowTitle::new(
+        "Service Center",
+        "Pengelola layanan systemd",
+    )));
 
     let add_btn = Button::from_icon_name("list-add-symbolic");
     add_btn.add_css_class("suggested-action");
@@ -192,7 +207,8 @@ fn build_ui(app: &adw::Application) {
     header.pack_end(&menu_btn);
     sidebar.append(&header);
 
-    let linger_banner = adw::Banner::new("Auto-start saat boot belum aktif. Layanan tidak jalan sebelum login");
+    let linger_banner =
+        adw::Banner::new("Auto-start saat boot belum aktif. Layanan tidak jalan sebelum login");
     linger_banner.set_button_label(Some("Aktifkan"));
     linger_banner.set_revealed(!backend::linger_enabled());
     let linger_banner_c = linger_banner.clone();
@@ -215,19 +231,22 @@ fn build_ui(app: &adw::Application) {
     search.set_margin_start(8);
     search.set_margin_end(8);
     let rows_s = rows.clone();
-    let mgr_s = mgr.clone();
     search.connect_search_changed(move |se| {
         let q = se.text().to_lowercase();
-        for (sid, rw) in rows_s.borrow().iter() {
-            let name = mgr_s
-                .borrow()
-                .get(sid)
-                .map(|s| s.name.to_lowercase())
-                .unwrap_or_default();
-            rw.row.set_visible(name.contains(&q));
+        for rw in rows_s.borrow().values() {
+            rw.row.set_visible(rw.search_text.contains(&q));
         }
     });
     sidebar.append(&search);
+
+    let discovery_status = Label::new(None);
+    discovery_status.set_wrap(true);
+    discovery_status.add_css_class("error");
+    discovery_status.set_margin_start(12);
+    discovery_status.set_margin_end(12);
+    discovery_status.set_margin_bottom(6);
+    discovery_status.set_visible(false);
+    sidebar.append(&discovery_status);
 
     let scroller = ScrolledWindow::new();
     scroller.set_vexpand(true);
@@ -238,7 +257,7 @@ fn build_ui(app: &adw::Application) {
     empty_page.set_icon_name(Some("system-run-symbolic"));
     empty_page.set_title("Belum ada layanan");
     empty_page.set_description(Some(
-        "Pilih file program (.py, .js, .sh, package.json, atau binary) lalu jalankan sebagai layanan.",
+        "Layanan systemd pengguna yang sudah dimuat akan ditemukan otomatis. Anda juga dapat mendaftarkan program secara manual.",
     ));
     let empty_add_btn = Button::with_label("Tambah Layanan");
     empty_add_btn.add_css_class("suggested-action");
@@ -320,6 +339,9 @@ fn build_ui(app: &adw::Application) {
     edit_row.add_suffix(&edit_btn);
     edit_row.set_activatable_widget(Some(&edit_btn));
     info_group.add(&edit_row);
+    let source_row = adw::ActionRow::new();
+    source_row.set_title("Sumber");
+    info_group.add(&source_row);
     let file_row = adw::ActionRow::new();
     file_row.set_title("File");
     let command_row = adw::ActionRow::new();
@@ -408,10 +430,14 @@ fn build_ui(app: &adw::Application) {
         restart_btn: restart_btn.clone(),
         autostart_row: autostart_row.clone(),
         status_banner: status_banner.clone(),
+        source_row: source_row.clone(),
+        edit_row: edit_row.clone(),
         file_row: file_row.clone(),
         command_row: command_row.clone(),
         workdir_row: workdir_row.clone(),
         unit_row: unit_row.clone(),
+        database_group: database_group.clone(),
+        danger_group: danger_group.clone(),
         logs_view: logs_view.clone(),
         logs_expander: logs_expander.clone(),
     });
@@ -420,14 +446,41 @@ fn build_ui(app: &adw::Application) {
     let rebuild_rows = {
         let listbox = listbox.clone();
         let mgr = mgr.clone();
+        let system_services = system_services.clone();
         let rows = rows.clone();
+        let group_rows = group_rows.clone();
         let sidebar_stack = sidebar_stack.clone();
+        let search = search.clone();
+        let current_id = current_id.clone();
         move || {
+            let selected_key = current_id.borrow().clone();
             for rw in rows.borrow().values() {
                 listbox.remove(&rw.row);
             }
+            for row in group_rows.borrow().iter() {
+                listbox.remove(row);
+            }
             rows.borrow_mut().clear();
+            group_rows.borrow_mut().clear();
+
             let services = mgr.borrow().services();
+            let system_services = system_services.borrow().clone();
+            let query = search.text().to_lowercase();
+            let add_group = |title: String| {
+                let row = ListBoxRow::new();
+                row.set_selectable(false);
+                row.set_activatable(false);
+                let label = Label::new(Some(&title));
+                label.set_xalign(0.0);
+                label.add_css_class("heading");
+                label.set_margin_start(12);
+                label.set_margin_top(10);
+                label.set_margin_bottom(4);
+                row.set_child(Some(&label));
+                listbox.append(&row);
+                group_rows.borrow_mut().push(row);
+            };
+            add_group(format!("Didaftarkan manual ({})", services.len()));
             for svc in &services {
                 let row = ListBoxRow::new();
                 let boxl = GtkBox::new(Orientation::Horizontal, 10);
@@ -454,18 +507,81 @@ fn build_ui(app: &adw::Application) {
                 boxl.append(&dot);
                 boxl.append(&text_box);
                 row.set_child(Some(&boxl));
-                unsafe { row.set_data("sid", svc.id.clone()); }
+                let key = format!("manual:{}", svc.id);
+                unsafe {
+                    row.set_data("sid", key.clone());
+                }
+                row.set_visible(svc.name.to_lowercase().contains(&query));
                 listbox.append(&row);
                 rows.borrow_mut().insert(
-                    svc.id.clone(),
-                    RowWidgets { row, dot, subtitle },
+                    key,
+                    RowWidgets {
+                        row,
+                        search_text: svc.name.to_lowercase(),
+                        dot,
+                        subtitle,
+                    },
                 );
             }
-            sidebar_stack.set_visible_child_name(if services.is_empty() { "empty" } else { "list" });
+
+            add_group(format!(
+                "Layanan systemd pengguna ({})",
+                system_services.len()
+            ));
+            for service in &system_services {
+                let row = ListBoxRow::new();
+                let boxl = GtkBox::new(Orientation::Horizontal, 10);
+                boxl.set_margin_start(12);
+                boxl.set_margin_end(12);
+                boxl.set_margin_top(8);
+                boxl.set_margin_bottom(8);
+                let dot = Label::new(Some("●"));
+                dot.add_css_class("dot-off");
+                dot.set_valign(Align::Center);
+                let text_box = GtkBox::new(Orientation::Vertical, 2);
+                text_box.set_hexpand(true);
+                let name = Label::new(Some(&service.description));
+                name.set_xalign(0.0);
+                name.add_css_class("service-name");
+                name.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+                let subtitle = Label::new(Some(&service.unit));
+                subtitle.set_xalign(0.0);
+                subtitle.add_css_class("caption");
+                subtitle.add_css_class("dim-label");
+                subtitle.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+                text_box.append(&name);
+                text_box.append(&subtitle);
+                boxl.append(&dot);
+                boxl.append(&text_box);
+                row.set_child(Some(&boxl));
+                let key = format!("system:{}", service.unit);
+                unsafe {
+                    row.set_data("sid", key.clone());
+                }
+                let searchable = format!("{} {}", service.description, service.unit).to_lowercase();
+                row.set_visible(searchable.contains(&query));
+                listbox.append(&row);
+                rows.borrow_mut().insert(
+                    key,
+                    RowWidgets {
+                        row,
+                        search_text: searchable,
+                        dot,
+                        subtitle,
+                    },
+                );
+            }
+            let has_services = !services.is_empty() || !system_services.is_empty();
+            sidebar_stack.set_visible_child_name(if has_services { "list" } else { "empty" });
+            if let Some(key) = selected_key.as_ref() {
+                if let Some(row) = rows.borrow().get(key) {
+                    listbox.select_row(Some(&row.row));
+                }
+            }
         }
     };
     rebuild_rows();
-    let rebuild_rows_rc = Rc::new(rebuild_rows);
+    let rebuild_rows_rc: Rc<dyn Fn()> = Rc::new(rebuild_rows);
 
     // ---------------- Cloudflare Tunnel ----------------
     {
@@ -483,10 +599,13 @@ fn build_ui(app: &adw::Application) {
     // ---------------- Selection ----------------
     let detail_sel = detail.clone();
     let mgr_sel = mgr.clone();
+    let system_services_sel = system_services.clone();
     let states_sel = states.clone();
     let current_sel = current_id.clone();
     let detail_stack_sel = detail_stack.clone();
     let rows_sel = rows.clone();
+    let updating = Rc::new(RefCell::new(false));
+    let updating_sel = updating.clone();
     listbox.connect_row_selected(move |_lb, row| {
         let Some(row) = row else {
             *current_sel.borrow_mut() = None;
@@ -504,7 +623,14 @@ fn build_ui(app: &adw::Application) {
         *current_sel.borrow_mut() = Some(sid.clone());
         detail_stack_sel.set_visible_child_name("detail");
         let _ = &rows_sel;
-        update_detail(&mgr_sel, &states_sel, &current_sel, &detail_sel);
+        update_detail(
+            &mgr_sel,
+            &system_services_sel,
+            &states_sel,
+            &current_sel,
+            &detail_sel,
+            &updating_sel,
+        );
         load_logs(&mgr_sel, &current_sel, &detail_sel);
     });
 
@@ -514,8 +640,13 @@ fn build_ui(app: &adw::Application) {
         let current = current_id.clone();
         let toast = toast.clone();
         move |_btn: &Button| {
-            if let Some(sid) = current.borrow().clone() {
-                match mgr.borrow().action(&sid, verb) {
+            if let Some(selection) = current.borrow().clone() {
+                let result = match selection_parts(&selection) {
+                    Some(("manual", sid)) => mgr.borrow().action(sid, verb),
+                    Some(("system", unit)) => mgr.borrow().system_action(unit, verb),
+                    _ => return,
+                };
+                match result {
                     Ok((ok, msg)) => {
                         if !ok {
                             toast.add_toast(adw::Toast::new(&if msg.is_empty() {
@@ -540,13 +671,15 @@ fn build_ui(app: &adw::Application) {
     let mgr_auto = mgr.clone();
     let current_auto = current_id.clone();
     let toast_auto = toast.clone();
-    let updating = Rc::new(RefCell::new(false));
     let updating_set = updating.clone();
     autostart_row.connect_active_notify(move |row| {
         if *updating_set.borrow() {
             return;
         }
         if let Some(sid) = current_auto.borrow().clone() {
+            let Some(("manual", sid)) = selection_parts(&sid) else {
+                return;
+            };
             let enabled = row.is_active();
             match mgr_auto.borrow().set_enabled(&sid, enabled) {
                 Ok((ok, msg)) => {
@@ -589,8 +722,13 @@ fn build_ui(app: &adw::Application) {
         let current = current_id.clone();
         let rebuild_rows = rebuild_rows_rc.clone();
         edit_btn.connect_clicked(move |_| {
-            let Some(sid) = current.borrow().clone() else { return };
-            open_edit_dialog(&window, &mgr, &toast, &sid, rebuild_rows.clone());
+            let Some(sid) = current.borrow().clone() else {
+                return;
+            };
+            let Some(("manual", sid)) = selection_parts(&sid) else {
+                return;
+            };
+            open_edit_dialog(&window, &mgr, &toast, sid, rebuild_rows.clone());
         });
     }
 
@@ -604,7 +742,12 @@ fn build_ui(app: &adw::Application) {
         let rebuild_rows_c = rebuild_rows.clone();
         let detail_stack_d = detail_stack.clone();
         delete_btn.connect_clicked(move |_| {
-            let Some(sid) = current.borrow().clone() else { return };
+            let Some(sid) = current.borrow().clone() else {
+                return;
+            };
+            if !matches!(selection_parts(&sid), Some(("manual", _))) {
+                return;
+            }
             let dialog = adw::AlertDialog::new(
                 Some("Hapus layanan?"),
                 Some("Layanan akan dihentikan dan unit systemd dihapus."),
@@ -621,7 +764,9 @@ fn build_ui(app: &adw::Application) {
             let sid_move = sid.clone();
             dialog.connect_response(None, move |_d, resp| {
                 if resp == "delete" {
-                    let _ = mgr.borrow_mut().delete(&sid_move);
+                    if let Some(("manual", service_id)) = selection_parts(&sid_move) {
+                        let _ = mgr.borrow_mut().delete(service_id);
+                    }
                     *current.borrow_mut() = None;
                     detail_stack.set_visible_child_name("empty");
                     rebuild_rows();
@@ -659,7 +804,10 @@ fn build_ui(app: &adw::Application) {
             let Some(sid) = current.borrow().clone() else {
                 return;
             };
-            let svc = mgr.borrow().get(&sid);
+            let Some(("manual", service_id)) = selection_parts(&sid) else {
+                return;
+            };
+            let svc = mgr.borrow().get(service_id);
             if let Some(svc) = svc {
                 open_restore_dialog(&window, &mgr, &toast, &svc.id, &svc.name);
             }
@@ -668,26 +816,64 @@ fn build_ui(app: &adw::Application) {
 
     // ---------------- Refresh timer ----------------
     let mgr_t = mgr.clone();
+    let system_services_t = system_services.clone();
     let states_t = states.clone();
     let rows_t = rows.clone();
     let current_t = current_id.clone();
     let detail_t = detail.clone();
+    let updating_t = updating.clone();
+    let rebuild_rows_t = rebuild_rows_rc.clone();
+    let discovery_status_t = discovery_status.clone();
     adw::glib::timeout_add_seconds_local(2, move || {
-        refresh(&mgr_t, &states_t, &rows_t, &current_t, &detail_t);
+        refresh(
+            &mgr_t,
+            &system_services_t,
+            &states_t,
+            &rows_t,
+            &current_t,
+            &detail_t,
+            &updating_t,
+            &rebuild_rows_t,
+            &discovery_status_t,
+        );
         adw::glib::ControlFlow::Continue
     });
 
-    refresh(&mgr, &states, &rows, &current_id, &detail);
+    refresh(
+        &mgr,
+        &system_services,
+        &states,
+        &rows,
+        &current_id,
+        &detail,
+        &updating,
+        &rebuild_rows_rc,
+        &discovery_status,
+    );
 
     {
         let mgr = mgr.clone();
+        let system_services = system_services.clone();
         let states = states.clone();
         let rows = rows.clone();
         let current = current_id.clone();
         let detail = detail.clone();
+        let updating = updating.clone();
+        let rebuild_rows = rebuild_rows_rc.clone();
+        let discovery_status = discovery_status.clone();
         REFRESH_FN.with(|f| {
             *f.borrow_mut() = Some(Rc::new(move || {
-                refresh(&mgr, &states, &rows, &current, &detail);
+                refresh(
+                    &mgr,
+                    &system_services,
+                    &states,
+                    &rows,
+                    &current,
+                    &detail,
+                    &updating,
+                    &rebuild_rows,
+                    &discovery_status,
+                );
             }));
         });
     }
@@ -697,13 +883,48 @@ fn build_ui(app: &adw::Application) {
 
 fn refresh(
     mgr: &Rc<RefCell<Manager>>,
+    system_services: &Rc<RefCell<Vec<backend::SystemService>>>,
     states: &Rc<RefCell<HashMap<String, ServiceState>>>,
     rows: &Rc<RefCell<HashMap<String, RowWidgets>>>,
     current: &Rc<RefCell<Option<String>>>,
     detail: &Rc<DetailWidgets>,
+    updating: &Rc<RefCell<bool>>,
+    rebuild_rows: &Rc<dyn Fn()>,
+    discovery_status: &Label,
 ) {
     let services = mgr.borrow().services();
-    let units: Vec<String> = services.iter().map(|s| s.unit_name()).collect();
+    match mgr.borrow().system_services() {
+        Ok(discovered) => {
+            let old_units: Vec<String> = system_services
+                .borrow()
+                .iter()
+                .map(|service| service.unit.clone())
+                .collect();
+            let new_units: Vec<String> = discovered
+                .iter()
+                .map(|service| service.unit.clone())
+                .collect();
+            discovery_status.set_visible(false);
+            if old_units != new_units {
+                *system_services.borrow_mut() = discovered;
+                rebuild_rows();
+            }
+        }
+        Err(error) => {
+            discovery_status.set_text(&format!(
+                "Tidak dapat membaca layanan systemd pengguna: {}",
+                error
+            ));
+            discovery_status.set_visible(true);
+        }
+    }
+    let mut units: Vec<String> = services.iter().map(|s| s.unit_name()).collect();
+    units.extend(
+        system_services
+            .borrow()
+            .iter()
+            .map(|service| service.unit.clone()),
+    );
     let st = mgr.borrow().states(Some(units));
     let mut map = HashMap::new();
     for (unit, s) in st {
@@ -711,52 +932,118 @@ fn refresh(
     }
     *states.borrow_mut() = map;
 
-    for svc in &services {
-        let state = states
-            .borrow()
-            .get(&svc.unit_name())
-            .cloned()
-            .unwrap_or_default();
-        let unit_missing = !mgr.borrow().unit_exists(&svc.id);
-        if let Some(rw) = rows.borrow().get(&svc.id) {
+    for (key, unit, missing) in services
+        .iter()
+        .map(|service| {
+            (
+                format!("manual:{}", service.id),
+                service.unit_name(),
+                !mgr.borrow().unit_exists(&service.id),
+            )
+        })
+        .chain(system_services.borrow().iter().map(|service| {
+            (
+                format!("system:{}", service.unit),
+                service.unit.clone(),
+                !states.borrow().contains_key(&service.unit),
+            )
+        }))
+    {
+        let state = states.borrow().get(&unit).cloned().unwrap_or_default();
+        if let Some(rw) = rows.borrow().get(&key) {
             for c in ["dot-ok", "dot-err", "dot-warn", "dot-off"] {
                 rw.dot.remove_css_class(c);
             }
-            if unit_missing {
+            if missing {
                 rw.dot.add_css_class("dot-err");
-                rw.subtitle.set_text("Unit hilang");
+                rw.subtitle.set_text("Unit tidak dimuat");
             } else {
                 rw.dot.add_css_class(status_css(&state));
-                let suffix = if state.enabled == "enabled" { " · autostart" } else { "" };
-                rw.subtitle.set_text(&format!("{}{}", status_text(&state), suffix));
+                let suffix = if key.starts_with("manual:") && state.enabled == "enabled" {
+                    " · autostart"
+                } else {
+                    ""
+                };
+                rw.subtitle
+                    .set_text(&format!("{}{}", status_text(&state), suffix));
             }
         }
     }
 
-    update_detail(mgr, states, current, detail);
+    update_detail(mgr, system_services, states, current, detail, updating);
 }
 
 fn update_detail(
     mgr: &Rc<RefCell<Manager>>,
+    system_services: &Rc<RefCell<Vec<backend::SystemService>>>,
     states: &Rc<RefCell<HashMap<String, ServiceState>>>,
     current: &Rc<RefCell<Option<String>>>,
     detail: &Rc<DetailWidgets>,
+    updating: &Rc<RefCell<bool>>,
 ) {
-    let sid = current.borrow().clone();
-    let Some(sid) = sid else { return };
-    let Some(service) = mgr.borrow().get(&sid) else { return };
-    let state = states
-        .borrow()
-        .get(&service.unit_name())
-        .cloned()
-        .unwrap_or_default();
-    let unit_missing = !mgr.borrow().unit_exists(&service.id);
+    let Some(selection) = current.borrow().clone() else {
+        return;
+    };
+    let Some((kind, id)) = selection_parts(&selection) else {
+        return;
+    };
+    let (name, unit, file, command, workdir, is_manual) = match kind {
+        "manual" => {
+            let Some(service) = mgr.borrow().get(id) else {
+                return;
+            };
+            let unit = service.unit_name();
+            (
+                service.name,
+                unit,
+                service.file,
+                shell_join(&service.command),
+                service.workdir,
+                true,
+            )
+        }
+        "system" => {
+            let Some(service) = system_services
+                .borrow()
+                .iter()
+                .find(|service| service.unit == id)
+                .cloned()
+            else {
+                return;
+            };
+            let state = states.borrow().get(id).cloned().unwrap_or_default();
+            (
+                service.description,
+                service.unit,
+                state.fragment_path,
+                state.exec_start,
+                "Tidak tersedia".into(),
+                false,
+            )
+        }
+        _ => return,
+    };
+    let state = states.borrow().get(&unit).cloned().unwrap_or_default();
+    let unit_missing = if is_manual {
+        !mgr.borrow().unit_exists(id)
+    } else {
+        !states.borrow().contains_key(&unit)
+    };
 
+    let source = if is_manual {
+        "Didaftarkan manual di Service Center".to_string()
+    } else {
+        format!(
+            "{} · ditemukan dari systemd --user; unit tidak diubah oleh aplikasi",
+            name
+        )
+    };
+    detail.source_row.set_subtitle(&source);
     if unit_missing {
-        detail.state_row.set_subtitle("Unit hilang");
+        detail.state_row.set_subtitle("Unit tidak dimuat");
         detail
             .status_banner
-            .set_title("Unit systemd tidak ditemukan. Hapus lalu daftarkan ulang");
+            .set_title("Unit systemd tidak ditemukan atau tidak dapat dibaca");
     } else {
         let mut text = status_text(&state).to_string();
         if !state.sub.is_empty() {
@@ -764,7 +1051,9 @@ fn update_detail(
         }
         detail.state_row.set_subtitle(&text);
     }
-    detail.status_banner.set_revealed(state.failed());
+    detail
+        .status_banner
+        .set_revealed(state.failed() || unit_missing);
     let pid = if state.pid.is_empty() || state.pid == "0" {
         "-"
     } else {
@@ -772,19 +1061,40 @@ fn update_detail(
     };
     detail.pid_row.set_subtitle(pid);
 
-    detail.file_row.set_subtitle(&service.file);
-    detail.command_row.set_subtitle(&shell_join(&service.command));
-    detail.workdir_row.set_subtitle(&service.workdir);
-    detail.unit_row.set_subtitle(&service.unit_name());
+    detail.file_row.set_title(if is_manual {
+        "File program"
+    } else {
+        "File unit"
+    });
+    detail.file_row.set_subtitle(if file.is_empty() {
+        "Tidak tersedia"
+    } else {
+        &file
+    });
+    detail.command_row.set_subtitle(if command.is_empty() {
+        "Tidak tersedia"
+    } else {
+        &command
+    });
+    detail.workdir_row.set_subtitle(&workdir);
+    detail.unit_row.set_subtitle(&unit);
 
     let running = state.running();
     detail.start_btn.set_sensitive(!running && !unit_missing);
     detail.stop_btn.set_sensitive(running && !unit_missing);
     detail.restart_btn.set_sensitive(running && !unit_missing);
-    detail.autostart_row.set_sensitive(!unit_missing);
+    detail.autostart_row.set_visible(is_manual);
+    detail.edit_row.set_visible(is_manual);
+    detail.database_group.set_visible(is_manual);
+    detail.danger_group.set_visible(is_manual);
+    detail
+        .autostart_row
+        .set_sensitive(is_manual && !unit_missing);
     let desired = state.enabled == "enabled";
     if detail.autostart_row.is_active() != desired {
+        *updating.borrow_mut() = true;
         detail.autostart_row.set_active(desired);
+        *updating.borrow_mut() = false;
     }
 }
 
@@ -793,12 +1103,26 @@ fn load_logs(
     current: &Rc<RefCell<Option<String>>>,
     detail: &Rc<DetailWidgets>,
 ) {
-    let Some(sid) = current.borrow().clone() else { return };
+    let Some(selection) = current.borrow().clone() else {
+        return;
+    };
+    let Some((kind, id)) = selection_parts(&selection) else {
+        return;
+    };
     let buf = detail.logs_view.buffer();
-    match mgr.borrow().logs(&sid, 200) {
+    let result = match kind {
+        "manual" => mgr.borrow().logs(id, 200),
+        "system" => mgr.borrow().system_logs(id, 200),
+        _ => return,
+    };
+    match result {
         Ok((ok, text)) => {
             if ok {
-                buf.set_text(if text.trim().is_empty() { "Belum ada log." } else { &text });
+                buf.set_text(if text.trim().is_empty() {
+                    "Belum ada log."
+                } else {
+                    &text
+                });
             } else {
                 buf.set_text(&text);
             }
@@ -964,14 +1288,22 @@ fn open_restore_dialog(
         let log_expander = log_expander.clone();
         let banner = banner.clone();
         engine_row.connect_selected_notify(move |row| {
-            let engine = if row.selected() == 1 { "mysql" } else { "postgresql" };
+            let engine = if row.selected() == 1 {
+                "mysql"
+            } else {
+                "postgresql"
+            };
             let port = port_row.text().to_string();
             if port.trim().is_empty() || port == "5432" || port == "3306" {
                 port_row.set_text(db_restore::default_port(engine));
             }
             let user = user_row.text().to_string();
             if user.trim().is_empty() || user == "postgres" || user == "root" {
-                user_row.set_text(if engine == "mysql" { "root" } else { "postgres" });
+                user_row.set_text(if engine == "mysql" {
+                    "root"
+                } else {
+                    "postgres"
+                });
             }
             if engine == "mysql" {
                 clean_row.set_subtitle("Hapus dan buat ulang database sebelum restore");
@@ -1217,49 +1549,43 @@ fn open_restore_dialog(
                 let status_label = status_label.clone();
                 let service_id = service_id.clone();
                 let service_name = service_name.clone();
-                adw::glib::timeout_add_local(
-                    std::time::Duration::from_millis(120),
-                    move || {
-                        {
-                            let mut queue = logs.lock().unwrap();
-                            for line in queue.drain(..) {
-                                append_log(&line);
+                adw::glib::timeout_add_local(std::time::Duration::from_millis(120), move || {
+                    {
+                        let mut queue = logs.lock().unwrap();
+                        for line in queue.drain(..) {
+                            append_log(&line);
+                        }
+                    }
+                    let done = finished.lock().unwrap().take();
+                    if let Some(res) = done {
+                        busy.set(false);
+                        set_running(false);
+                        match res {
+                            Ok(()) => {
+                                status_label.set_text("Restore selesai");
+                                toast.add_toast(adw::Toast::new("Restore database selesai"));
+                            }
+                            Err(e) => {
+                                status_label.set_text(&format!("Gagal: {}", e));
+                                append_log(&format!("Gagal: {}", e));
+                                let first = e.lines().next().unwrap_or("Restore gagal");
+                                toast.add_toast(adw::Toast::new(&format!(
+                                    "Restore database gagal: {}",
+                                    first
+                                )));
                             }
                         }
-                        let done = finished.lock().unwrap().take();
-                        if let Some(res) = done {
-                            busy.set(false);
-                            set_running(false);
-                            match res {
-                                Ok(()) => {
-                                    status_label.set_text("Restore selesai");
-                                    toast.add_toast(adw::Toast::new("Restore database selesai"));
-                                }
-                                Err(e) => {
-                                    status_label.set_text(&format!("Gagal: {}", e));
-                                    append_log(&format!("Gagal: {}", e));
-                                    let first = e.lines().next().unwrap_or("Restore gagal");
-                                    toast.add_toast(adw::Toast::new(&format!(
-                                        "Restore database gagal: {}",
-                                        first
-                                    )));
-                                }
+                        if stopped {
+                            append_log(&format!("Menyalakan kembali layanan {}", service_name));
+                            if let Err(e) = mgr.borrow().start(&service_id) {
+                                append_log(&format!("Gagal menyalakan layanan: {}", e));
                             }
-                            if stopped {
-                                append_log(&format!(
-                                    "Menyalakan kembali layanan {}",
-                                    service_name
-                                ));
-                                if let Err(e) = mgr.borrow().start(&service_id) {
-                                    append_log(&format!("Gagal menyalakan layanan: {}", e));
-                                }
-                            }
-                            do_refresh();
-                            return adw::glib::ControlFlow::Break;
                         }
-                        adw::glib::ControlFlow::Continue
-                    },
-                );
+                        do_refresh();
+                        return adw::glib::ControlFlow::Break;
+                    }
+                    adw::glib::ControlFlow::Continue
+                });
             }
         });
     }
@@ -1371,7 +1697,9 @@ fn open_cloudflare_dialog(
     ingress_view.set_right_margin(8);
     ingress_view.set_top_margin(6);
     ingress_view.set_bottom_margin(6);
-    ingress_view.buffer().set_text(&cloudflare::ingress_text(&config.ingress));
+    ingress_view
+        .buffer()
+        .set_text(&cloudflare::ingress_text(&config.ingress));
     ingress_scroller.set_child(Some(&ingress_view));
     ingress_expander.add_row(&ingress_scroller);
     ingress_group.add(&ingress_expander);
@@ -1513,9 +1841,7 @@ fn open_cloudflare_dialog(
                 return;
             }
             let credentials_file = credentials_row.text().trim().to_string();
-            if !credentials_file.is_empty()
-                && !std::path::Path::new(&credentials_file).is_file()
-            {
+            if !credentials_file.is_empty() && !std::path::Path::new(&credentials_file).is_file() {
                 show_error("File kredensial tidak ditemukan.");
                 return;
             }
@@ -1538,7 +1864,9 @@ fn open_cloudflare_dialog(
                 match cloudflared.borrow().clone() {
                     Some(binary) => Some(binary),
                     None => {
-                        show_error("Unduh cloudflared terlebih dahulu sebelum mendaftarkan layanan.");
+                        show_error(
+                            "Unduh cloudflared terlebih dahulu sebelum mendaftarkan layanan.",
+                        );
                         return;
                     }
                 }
@@ -1641,7 +1969,6 @@ fn open_cloudflare_dialog(
     });
 }
 
-
 fn open_add_dialog(
     window: &adw::ApplicationWindow,
     mgr: &Rc<RefCell<Manager>>,
@@ -1674,7 +2001,9 @@ fn open_add_dialog(
     // Aplikasi
     let app_group = adw::PreferencesGroup::new();
     app_group.set_title("Aplikasi");
-    app_group.set_description(Some("Pilih file utama program. Perintah dan direktori diisi otomatis."));
+    app_group.set_description(Some(
+        "Pilih file utama program. Perintah dan direktori diisi otomatis.",
+    ));
     let file_row = adw::ActionRow::new();
     file_row.set_title("File program");
     file_row.set_subtitle("Belum dipilih");
@@ -1756,20 +2085,20 @@ fn open_add_dialog(
             let command_row = command_row_c.clone();
             let workdir_row = workdir_row_c.clone();
             pick_file(&window_c, "Pilih file program", move |path| {
-                    file_row.set_subtitle(&path.to_string_lossy());
-                    if name_row.text().trim().is_empty() {
-                        name_row.set_text(&backend::pretty_name(&path));
+                file_row.set_subtitle(&path.to_string_lossy());
+                if name_row.text().trim().is_empty() {
+                    name_row.set_text(&backend::pretty_name(&path));
+                }
+                match backend::detect_command(&path) {
+                    Ok((cmd, wd)) => {
+                        command_row.set_text(&shell_join(&cmd));
+                        workdir_row.set_text(&wd.to_string_lossy());
                     }
-                    match backend::detect_command(&path) {
-                        Ok((cmd, wd)) => {
-                            command_row.set_text(&shell_join(&cmd));
-                            workdir_row.set_text(&wd.to_string_lossy());
-                        }
-                        Err(_) => {
-                            workdir_row.set_text(&path.parent().unwrap_or(&path).to_string_lossy());
-                        }
+                    Err(_) => {
+                        workdir_row.set_text(&path.parent().unwrap_or(&path).to_string_lossy());
                     }
-                    *selected.borrow_mut() = Some(path);
+                }
+                *selected.borrow_mut() = Some(path);
             });
         });
     }
@@ -1797,17 +2126,19 @@ fn open_add_dialog(
                 show_error("Nama layanan wajib diisi.");
                 return;
             }
-            let mut command: Vec<String> = shell_words::split(command_row.text().as_str())
-                .unwrap_or_default();
-            let extra: Vec<String> = shell_words::split(args_row.text().as_str())
-                .unwrap_or_default();
+            let mut command: Vec<String> =
+                shell_words::split(command_row.text().as_str()).unwrap_or_default();
+            let extra: Vec<String> =
+                shell_words::split(args_row.text().as_str()).unwrap_or_default();
             command.extend(extra);
             if command.is_empty() {
                 show_error("Perintah masih kosong.");
                 return;
             }
             let workdir = if workdir_row.text().trim().is_empty() {
-                path.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default()
+                path.parent()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default()
             } else {
                 workdir_row.text().to_string()
             };
@@ -1816,7 +2147,9 @@ fn open_add_dialog(
                 return;
             }
             let buf = env_view.buffer();
-            let text = buf.text(&buf.start_iter(), &buf.end_iter(), false).to_string();
+            let text = buf
+                .text(&buf.start_iter(), &buf.end_iter(), false)
+                .to_string();
             let mut env = std::collections::BTreeMap::new();
             for line in text.lines() {
                 let line = line.trim();
@@ -2054,17 +2387,19 @@ fn open_edit_dialog(
                 show_error("Nama layanan wajib diisi.");
                 return;
             }
-            let mut command: Vec<String> = shell_words::split(command_row.text().as_str())
-                .unwrap_or_default();
-            let extra: Vec<String> = shell_words::split(args_row.text().as_str())
-                .unwrap_or_default();
+            let mut command: Vec<String> =
+                shell_words::split(command_row.text().as_str()).unwrap_or_default();
+            let extra: Vec<String> =
+                shell_words::split(args_row.text().as_str()).unwrap_or_default();
             command.extend(extra);
             if command.is_empty() {
                 show_error("Perintah masih kosong.");
                 return;
             }
             let workdir = if workdir_row.text().trim().is_empty() {
-                path.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default()
+                path.parent()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default()
             } else {
                 workdir_row.text().to_string()
             };
@@ -2073,7 +2408,9 @@ fn open_edit_dialog(
                 return;
             }
             let buf = env_view.buffer();
-            let text = buf.text(&buf.start_iter(), &buf.end_iter(), false).to_string();
+            let text = buf
+                .text(&buf.start_iter(), &buf.end_iter(), false)
+                .to_string();
             let mut env = std::collections::BTreeMap::new();
             for line in text.lines() {
                 let line = line.trim();
@@ -2127,7 +2464,6 @@ fn open_edit_dialog(
     });
 }
 
-
 fn pick_file<W, F>(window: &W, title: &str, cb: F)
 where
     W: IsA<gtk4::Window>,
@@ -2157,13 +2493,8 @@ where
     dialog.present();
 }
 
-fn pick_file_filtered<W, F>(
-    window: &W,
-    title: &str,
-    filter_name: &str,
-    patterns: &[&str],
-    cb: F,
-) where
+fn pick_file_filtered<W, F>(window: &W, title: &str, filter_name: &str, patterns: &[&str], cb: F)
+where
     W: IsA<gtk4::Window>,
     F: Fn(std::path::PathBuf) + 'static,
 {
