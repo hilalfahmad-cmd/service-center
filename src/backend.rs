@@ -43,9 +43,8 @@ pub fn restart_labels(key: &str) -> String {
     }
 }
 
-static SAFE_ARG: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-    regex::Regex::new(r"^[A-Za-z0-9_@%+=:,./-]+$").unwrap()
-});
+static SAFE_ARG: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"^[A-Za-z0-9_@%+=:,./-]+$").unwrap());
 
 fn _run(cmd: &[&str], timeout_secs: u64) -> Result<std::process::Output, String> {
     let mut c = Command::new(cmd[0]);
@@ -82,10 +81,7 @@ pub fn linger_enabled() -> bool {
         10,
     ) {
         Ok(out) => {
-            out.status.success()
-                && String::from_utf8_lossy(&out.stdout)
-                    .trim()
-                    .ends_with("yes")
+            out.status.success() && String::from_utf8_lossy(&out.stdout).trim().ends_with("yes")
         }
         Err(_) => false,
     }
@@ -106,7 +102,14 @@ pub fn enable_linger() -> (bool, String) {
                 } else {
                     msg.trim().to_string()
                 };
-                (false, if msg.is_empty() { "Gagal mengaktifkan linger".into() } else { msg })
+                (
+                    false,
+                    if msg.is_empty() {
+                        "Gagal mengaktifkan linger".into()
+                    } else {
+                        msg
+                    },
+                )
             }
         }
         Err(e) => (false, e),
@@ -215,11 +218,15 @@ pub fn detect_command(path: &Path) -> Result<(Vec<String>, PathBuf), String> {
     };
 
     if path.file_name().and_then(|n| n.to_str()) == Some("package.json") {
-        let content = fs::read_to_string(&path).map_err(|_| "package.json tidak bisa dibaca".to_string())?;
-        let pkg: serde_json::Value =
-            serde_json::from_str(&content).map_err(|_| "package.json tidak bisa dibaca".to_string())?;
+        let content =
+            fs::read_to_string(&path).map_err(|_| "package.json tidak bisa dibaca".to_string())?;
+        let pkg: serde_json::Value = serde_json::from_str(&content)
+            .map_err(|_| "package.json tidak bisa dibaca".to_string())?;
         let scripts = pkg.get("scripts").and_then(|v| v.as_object());
-        if let Some(start) = scripts.and_then(|s| s.get("start")).and_then(|v| v.as_str()) {
+        if let Some(start) = scripts
+            .and_then(|s| s.get("start"))
+            .and_then(|v| v.as_str())
+        {
             let npm = which("npm").unwrap_or_else(|| "npm".into());
             return Ok((vec![npm, "start".into()], workdir));
         }
@@ -248,11 +255,20 @@ pub fn detect_command(path: &Path) -> Result<(Vec<String>, PathBuf), String> {
             let node = which("node").unwrap_or_else(|| "/usr/bin/node".into());
             Ok((vec![node, path.to_string_lossy().to_string()], workdir))
         }
-        "py" => Ok((vec![python_for(&path), path.to_string_lossy().to_string()], workdir)),
-        "sh" | "bash" => Ok((vec!["bash".into(), path.to_string_lossy().to_string()], workdir)),
+        "py" => Ok((
+            vec![python_for(&path), path.to_string_lossy().to_string()],
+            workdir,
+        )),
+        "sh" | "bash" => Ok((
+            vec!["bash".into(), path.to_string_lossy().to_string()],
+            workdir,
+        )),
         "jar" => {
             let java = which("java").unwrap_or_else(|| "java".into());
-            Ok((vec![java, "-jar".into(), path.to_string_lossy().to_string()], workdir))
+            Ok((
+                vec![java, "-jar".into(), path.to_string_lossy().to_string()],
+                workdir,
+            ))
         }
         _ => {
             // executable file
@@ -264,7 +280,10 @@ pub fn detect_command(path: &Path) -> Result<(Vec<String>, PathBuf), String> {
                     }
                 }
             }
-            Err("Tipe file tidak dikenali. Pilih .py, .js, .sh, .jar, package.json, atau binary".into())
+            Err(
+                "Tipe file tidak dikenali. Pilih .py, .js, .sh, .jar, package.json, atau binary"
+                    .into(),
+            )
         }
     }
 }
@@ -317,7 +336,10 @@ impl Service {
             .iter()
             .map(|v| v.as_str().unwrap_or("").to_string())
             .collect();
-        let workdir = data["workdir"].as_str().ok_or("missing workdir")?.to_string();
+        let workdir = data["workdir"]
+            .as_str()
+            .ok_or("missing workdir")?
+            .to_string();
         let env: BTreeMap<String, String> = data
             .get("env")
             .and_then(|v| v.as_object())
@@ -368,16 +390,19 @@ pub fn build_unit(service: &Service) -> String {
     };
     let mut lines: Vec<String> = vec![];
     lines.push("[Unit]".into());
+    lines.push(format!("Description={}", service.name.replace('%', "%%")));
     lines.push(format!(
-        "Description={}",
-        service.name.replace('%', "%%")
+        "ConditionPathExists={}",
+        quote_unit_arg(&service.file)
     ));
-    lines.push(format!("ConditionPathExists={}", quote_unit_arg(&service.file)));
     lines.push("After=network.target".into());
     lines.push(String::new());
     lines.push("[Service]".into());
     lines.push("Type=simple".into());
-    lines.push(format!("WorkingDirectory={}", quote_unit_arg(&service.workdir)));
+    lines.push(format!(
+        "WorkingDirectory={}",
+        quote_unit_arg(&service.workdir)
+    ));
     lines.push(format!("ExecStart={}", exec_start));
     lines.push(format!("Restart={}", restart));
     lines.push("RestartSec=3".into());
@@ -401,6 +426,9 @@ pub struct ServiceState {
     pub sub: String,
     pub enabled: String,
     pub pid: String,
+    pub description: String,
+    pub fragment_path: String,
+    pub exec_start: String,
 }
 
 impl ServiceState {
@@ -421,10 +449,19 @@ pub fn parse_show(output: &str) -> BTreeMap<String, ServiceState> {
             states.insert(
                 unit.clone(),
                 ServiceState {
-                    active: block.get("ActiveState").cloned().unwrap_or_else(|| "inactive".into()),
-                    sub: block.get("SubState").cloned().unwrap_or_else(|| "dead".into()),
+                    active: block
+                        .get("ActiveState")
+                        .cloned()
+                        .unwrap_or_else(|| "inactive".into()),
+                    sub: block
+                        .get("SubState")
+                        .cloned()
+                        .unwrap_or_else(|| "dead".into()),
                     enabled: block.get("UnitFileState").cloned().unwrap_or_default(),
                     pid: block.get("MainPID").cloned().unwrap_or_default(),
+                    description: block.get("Description").cloned().unwrap_or_default(),
+                    fragment_path: block.get("FragmentPath").cloned().unwrap_or_default(),
+                    exec_start: block.get("ExecStart").cloned().unwrap_or_default(),
                 },
             );
         }
@@ -454,7 +491,11 @@ trait PartitionExt {
 impl PartitionExt for str {
     fn partition(&self, sep: char) -> (&str, &str, &str) {
         if let Some(i) = self.find(sep) {
-            (&self[..i], &self[i..i + sep.len_utf8()], &self[i + sep.len_utf8()..])
+            (
+                &self[..i],
+                &self[i..i + sep.len_utf8()],
+                &self[i + sep.len_utf8()..],
+            )
         } else {
             (self, "", "")
         }
@@ -516,8 +557,11 @@ impl Manager {
             map.insert(s.id.clone(), s.to_dict());
         }
         let payload = serde_json::json!({"version":1,"services": map});
-        fs::write(&self.registry_file, serde_json::to_string_pretty(&payload).unwrap() + "\n")
-            .map_err(|e| e.to_string())
+        fs::write(
+            &self.registry_file,
+            serde_json::to_string_pretty(&payload).unwrap() + "\n",
+        )
+        .map_err(|e| e.to_string())
     }
 
     pub fn services(&self) -> Vec<Service> {
@@ -531,7 +575,8 @@ impl Manager {
     }
 
     pub fn unit_path(&self, sid: &str) -> PathBuf {
-        self.unit_dir.join(format!("{}{}.service", UNIT_PREFIX, sid))
+        self.unit_dir
+            .join(format!("{}{}.service", UNIT_PREFIX, sid))
     }
 
     pub fn unit_exists(&self, sid: &str) -> bool {
@@ -611,7 +656,11 @@ impl Manager {
                 } else {
                     msg.trim().to_string()
                 };
-                warnings.push(if msg.is_empty() { "daemon-reload gagal".into() } else { msg });
+                warnings.push(if msg.is_empty() {
+                    "daemon-reload gagal".into()
+                } else {
+                    msg
+                });
             }
             Err(e) => warnings.push(e),
             _ => {}
@@ -666,7 +715,11 @@ impl Manager {
             "on-failure".into()
         };
 
-        let svc = self.services.get(sid).ok_or("Layanan tidak ditemukan")?.clone();
+        let svc = self
+            .services
+            .get(sid)
+            .ok_or("Layanan tidak ditemukan")?
+            .clone();
         let was_enabled = self
             .states(Some(vec![svc.unit_name()]))
             .get(&svc.unit_name())
@@ -703,7 +756,11 @@ impl Manager {
                 } else {
                     msg.trim().to_string()
                 };
-                warnings.push(if msg.is_empty() { "daemon-reload gagal".into() } else { msg });
+                warnings.push(if msg.is_empty() {
+                    "daemon-reload gagal".into()
+                } else {
+                    msg
+                });
             }
             Err(e) => warnings.push(e),
             _ => {}
@@ -746,7 +803,14 @@ impl Manager {
             } else {
                 msg.trim().to_string()
             };
-            Ok((false, if msg.is_empty() { format!("{} gagal", verb) } else { msg }))
+            Ok((
+                false,
+                if msg.is_empty() {
+                    format!("{} gagal", verb)
+                } else {
+                    msg
+                },
+            ))
         }
     }
 
@@ -774,12 +838,20 @@ impl Manager {
             } else {
                 msg.trim().to_string()
             };
-            Ok((false, if msg.is_empty() { format!("{} gagal", verb) } else { msg }))
+            Ok((
+                false,
+                if msg.is_empty() {
+                    format!("{} gagal", verb)
+                } else {
+                    msg
+                },
+            ))
         }
     }
 
     pub fn states(&self, units: Option<Vec<String>>) -> BTreeMap<String, ServiceState> {
-        let units = units.unwrap_or_else(|| self.services().iter().map(|s| s.unit_name()).collect());
+        let units =
+            units.unwrap_or_else(|| self.services().iter().map(|s| s.unit_name()).collect());
         if units.is_empty() {
             return BTreeMap::new();
         }
@@ -798,22 +870,108 @@ impl Manager {
         args.push("UnitFileState");
         args.push("-p");
         args.push("MainPID");
+        args.push("-p");
+        args.push("Description");
+        args.push("-p");
+        args.push("FragmentPath");
+        args.push("-p");
+        args.push("ExecStart");
         match systemctl(&args, 30) {
             Ok(out) if out.status.success() => parse_show(&String::from_utf8_lossy(&out.stdout)),
             _ => BTreeMap::new(),
         }
     }
 
+    pub fn system_services(&self) -> Result<Vec<SystemService>, String> {
+        let out = systemctl(
+            &[
+                "list-units",
+                "--type=service",
+                "--all",
+                "--no-legend",
+                "--plain",
+                "--full",
+                "--no-pager",
+            ],
+            30,
+        )?;
+        if !out.status.success() {
+            let detail = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            return Err(if detail.is_empty() {
+                "Gagal membaca daftar layanan systemd pengguna".into()
+            } else {
+                detail
+            });
+        }
+
+        let registered: std::collections::HashSet<String> = self
+            .services()
+            .iter()
+            .map(|service| service.unit_name())
+            .collect();
+        let mut services = filter_unregistered_system_services(
+            &parse_unit_list(&String::from_utf8_lossy(&out.stdout)),
+            &registered,
+        );
+        services.sort_by(|left, right| left.unit.cmp(&right.unit));
+        Ok(services)
+    }
+
+    fn is_discovered_system_unit(&self, unit: &str) -> Result<bool, String> {
+        Ok(self
+            .system_services()?
+            .iter()
+            .any(|service| service.unit == unit))
+    }
+
+    pub fn system_action(&self, unit: &str, verb: &str) -> Result<(bool, String), String> {
+        if !["start", "stop", "restart"].contains(&verb) {
+            return Err(format!("Aksi tidak dikenal: {}", verb));
+        }
+        if !self.is_discovered_system_unit(unit)? {
+            return Err("Layanan systemd tidak ditemukan".into());
+        }
+        let out = systemctl(&[verb, unit], 30)?;
+        if out.status.success() {
+            Ok((true, String::new()))
+        } else {
+            let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            let msg = if msg.is_empty() {
+                String::from_utf8_lossy(&out.stdout).trim().to_string()
+            } else {
+                msg
+            };
+            Ok((
+                false,
+                if msg.is_empty() {
+                    format!("{} gagal", verb)
+                } else {
+                    msg
+                },
+            ))
+        }
+    }
+
     pub fn logs(&self, sid: &str, lines: usize) -> Result<(bool, String), String> {
         let service = self.services.get(sid).ok_or("Layanan tidak ditemukan")?;
-        let unit = service.unit_name();
+        self.logs_for_unit(&service.unit_name(), lines)
+    }
+
+    pub fn system_logs(&self, unit: &str, lines: usize) -> Result<(bool, String), String> {
+        if !self.is_discovered_system_unit(unit)? {
+            return Err("Layanan systemd tidak ditemukan".into());
+        }
+        self.logs_for_unit(unit, lines)
+    }
+
+    fn logs_for_unit(&self, unit: &str, lines: usize) -> Result<(bool, String), String> {
         let n = lines.to_string();
         let out = _run(
             &[
                 "journalctl",
                 "--user",
                 "-u",
-                &unit,
+                unit,
                 "-n",
                 &n,
                 "--no-pager",
@@ -832,12 +990,23 @@ impl Manager {
             } else {
                 msg.trim().to_string()
             };
-            Ok((false, if msg.is_empty() { "journalctl gagal".into() } else { msg }))
+            Ok((
+                false,
+                if msg.is_empty() {
+                    "journalctl gagal".into()
+                } else {
+                    msg
+                },
+            ))
         }
     }
 
     pub fn delete(&mut self, sid: &str) -> Result<(), String> {
-        let service = self.services.get(sid).ok_or("Layanan tidak ditemukan")?.clone();
+        let service = self
+            .services
+            .get(sid)
+            .ok_or("Layanan tidak ditemukan")?
+            .clone();
         let unit = service.unit_name();
         let _ = systemctl(&["stop", &unit], 30);
         let _ = systemctl(&["disable", &unit], 30);
@@ -854,5 +1023,107 @@ impl Manager {
 
     pub fn daemon_reload(&self) -> Result<std::process::Output, String> {
         systemctl(&["daemon-reload"], 30)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemService {
+    pub unit: String,
+    pub description: String,
+}
+
+pub fn parse_unit_list(output: &str) -> Vec<SystemService> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let columns: Vec<&str> = line.split_whitespace().collect();
+            if columns.len() < 4 || !columns[0].ends_with(".service") {
+                return None;
+            }
+            let unit = columns[0];
+            let description = columns[4..].join(" ");
+            Some(SystemService {
+                unit: unit.to_string(),
+                description: if description.is_empty() {
+                    unit.trim_end_matches(".service").replace('-', " ")
+                } else {
+                    description
+                },
+            })
+        })
+        .collect()
+}
+
+fn filter_unregistered_system_services(
+    services: &[SystemService],
+    registered_units: &std::collections::HashSet<String>,
+) -> Vec<SystemService> {
+    services
+        .iter()
+        .filter(|service| !registered_units.contains(&service.unit))
+        .cloned()
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_systemd_service_rows_and_ignores_other_units() {
+        let services = parse_unit_list(
+            "dbus.service loaded active running D-Bus User Message Bus\n\
+             app.socket loaded active listening App socket\n\
+             worker.service loaded inactive dead\n\
+             malformed\n",
+        );
+
+        assert_eq!(
+            services,
+            vec![
+                SystemService {
+                    unit: "dbus.service".into(),
+                    description: "D-Bus User Message Bus".into(),
+                },
+                SystemService {
+                    unit: "worker.service".into(),
+                    description: "worker".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_show_includes_unit_details() {
+        let states = parse_show(
+            "Id=worker.service\nActiveState=active\nSubState=running\n\
+             Description=Background worker\nFragmentPath=/usr/lib/systemd/user/worker.service\n\
+             ExecStart={ path=/usr/bin/worker ; argv[]=/usr/bin/worker --serve ; }",
+        );
+        let state = states.get("worker.service").unwrap();
+
+        assert_eq!(state.description, "Background worker");
+        assert_eq!(state.fragment_path, "/usr/lib/systemd/user/worker.service");
+        assert!(state.exec_start.contains("/usr/bin/worker --serve"));
+    }
+
+    #[test]
+    fn excludes_manually_registered_units_from_systemd_discovery() {
+        let services = vec![
+            SystemService {
+                unit: "sc-api.service".into(),
+                description: "API".into(),
+            },
+            SystemService {
+                unit: "dbus.service".into(),
+                description: "D-Bus".into(),
+            },
+        ];
+        let registered = ["sc-api.service".to_string()].into_iter().collect();
+
+        assert_eq!(
+            filter_unregistered_system_services(&services, &registered),
+            vec![services[1].clone()]
+        );
     }
 }
