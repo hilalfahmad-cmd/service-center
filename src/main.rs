@@ -58,8 +58,16 @@ fn main() {
         let dialog = adw::AboutDialog::builder()
             .application_name("Service Center")
             .developer_name("Hilal Fajar")
-            .version("1.0.0")
-            .comments("Port Rust dari Service Center")
+            .version("1.2.0")
+            .comments(
+                "Aplikasi GTK4 yang ditulis dengan Rust untuk mengelola layanan systemd pengguna.\n\n\
+                 Daftarkan program secara manual sebagai layanan, atau lihat layanan yang sudah dimuat oleh systemd --user. \
+                 Pantau status, jalankan, hentikan, atau restart layanan, dan baca log-nya.\n\n\
+                 Layanan yang didaftarkan manual dapat dikelola dari Service Center. \
+                 Layanan yang ditemukan otomatis hanya dapat dikontrol dan dilihat log-nya; \
+                 konfigurasi, autostart, dan file unit-nya tidak diubah atau dihapus oleh aplikasi. \
+                 Aplikasi ini mengelola layanan pengguna, bukan layanan system-wide.",
+            )
             .build();
         if let Some(w) = app_c.windows().first() {
             dialog.present(Some(w));
